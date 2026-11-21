@@ -1,28 +1,34 @@
 using System.Diagnostics;
-
+using XboxWheelCompatibility.WheelTransformer;
 
 namespace XboxWheelCompatibility.WheelCompatibilityService
 {
-    class Program
+    internal static class Program
     {
-        public static void Main(string[] Arguments)
+        public static void Main(string[] arguments)
         {
-
             try
             {
-                Host.CreateDefaultBuilder(Arguments)
-                    .UseWindowsService()
-                    .ConfigureServices(Services =>
-                        {
-                            Services.AddHostedService<WheelCompatibilityWorker>();
-                        }
-                    )
+                Host.CreateDefaultBuilder(arguments)
+                    .UseWindowsService(options => options.ServiceName = "WheelCompatibilityService")
+                    .ConfigureServices(services =>
+                    {
+                        services.AddSingleton<WheelInputTransformer>();
+                        services.AddHostedService<WheelCompatibilityWorker>();
+                    })
                     .Build()
                     .Run();
             }
             catch (Exception ex)
             {
-                EventLog.WriteEntry(".NET Runtime", ex.ToString(), EventLogEntryType.Error, 1000);
+                try
+                {
+                    EventLog.WriteEntry(".NET Runtime", ex.ToString(), EventLogEntryType.Error, 1000);
+                }
+                catch
+                {
+                    // Nothing else we can do if even the event log is unavailable.
+                }
             }
         }
     }

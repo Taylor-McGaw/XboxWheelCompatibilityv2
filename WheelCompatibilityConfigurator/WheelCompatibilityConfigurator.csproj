@@ -2,12 +2,19 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-	<TargetFramework>net6.0-windows10.0.22000.0</TargetFramework>
-	<TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-	<PublishSingleFile Condition="'$(Configuration)' == 'Release'">true</PublishSingleFile>
-	<SelfContained>false</SelfContained>
+    <DebugType>embedded</DebugType>
+
+    <!-- Self-contained: the .NET runtime is built into the .exe, so users don't need to install .NET. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishDir>$(MSBuildProjectDirectory)\bin\$(Configuration)\publish\</PublishDir>
   </PropertyGroup>
 
   <ItemGroup>

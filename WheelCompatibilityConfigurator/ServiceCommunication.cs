@@ -1,30 +1,68 @@
-﻿using ServiceWire.TcpIp;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Text;
-using System.Threading.Tasks;
-using Windows.Gaming.Input;
+﻿using System.Net;
+using ServiceWire.TcpIp;
 using XboxWheelCompatibility.CommunicationInterface;
 
 namespace WheelCompatibilityConfigurator
 {
-    internal class Communicator
+    /// <summary>
+    /// Talks to the background service. Never throws: if the service is not running,
+    /// it returns null and reconnects automatically once the service is back.
+    /// </summary>
+    internal sealed class Communicator : IDisposable
     {
-        public TcpClient<IWheelCompatibilityService> TCPClient;
+        private readonly object sync = new();
+        private TcpClient<IWheelCompatibilityService>? client;
 
-        public Communicator() {
-            TCPClient = new TcpClient<IWheelCompatibilityService>(
-                new TcpEndPoint(
-                    new IPEndPoint(
-                        IPAddress.Parse("127.0.0.1"),
-                        16581
-                    )
-                )
-            );
+        /// <summary>The current wheel state, or null if the service can't be reached.</summary>
+        public LiveState? GetLiveState()
+        {
+            lock (sync)
+            {
+                try
+                {
+                    return LiveState.Parse(Connect().GetLiveState());
+                }
+                catch
+                {
+                    Disconnect();
+                    return null;
+                }
+            }
+        }
 
-            TCPClient.Proxy.GetMainWheelIndex();
+        public bool TrySetEnabled(bool enabled)
+        {
+            lock (sync)
+            {
+                try
+                {
+                    Connect().SetEnabled(enabled);
+                    return true;
+                }
+                catch
+                {
+                    Disconnect();
+                    return false;
+                }
+            }
+        }
+
+        private IWheelCompatibilityService Connect()
+        {
+            client ??= new TcpClient<IWheelCompatibilityService>(
+                new TcpEndPoint(new IPEndPoint(IPAddress.Loopback, IWheelCompatibilityService.Port)));
+            return client.Proxy;
+        }
+
+        private void Disconnect()
+        {
+            try { client?.Dispose(); } catch { }
+            client = null;
+        }
+
+        public void Dispose()
+        {
+            lock (sync) Disconnect();
         }
     }
 }

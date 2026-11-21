@@ -1,16 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Windows.Gaming.Input;
-
-namespace XboxWheelCompatibility.CommunicationInterface
+﻿namespace XboxWheelCompatibility.CommunicationInterface
 {
+    /// <summary>What the status window can ask the background service.</summary>
     public interface IWheelCompatibilityService
     {
-        public int GetMainWheelIndex();
-        public void Stop();
-        public void Start();
+        /// <summary>Only listens on this PC (127.0.0.1), never on the network.</summary>
+        public const int Port = 16581;
+
+        /// <summary>Everything the status window shows, in one call. Format: see <see cref="LiveState"/>.</summary>
+        public string GetLiveState();
+
+        /// <summary>Pause (false) or resume (true) sending wheel input.</summary>
+        public void SetEnabled(bool enabled);
     }
 }

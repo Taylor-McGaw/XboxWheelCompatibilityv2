@@ -1,3 +1,4 @@
+using System.Net;
 using ServiceWire.TcpIp;
 using Windows.Gaming.Input;
 using XboxWheelCompatibility.CommunicationInterface;
@@ -5,49 +6,73 @@ using XboxWheelCompatibility.WheelTransformer;
 
 namespace XboxWheelCompatibility.WheelCompatibilityService
 {
-    public class WheelCompatibilityWorker : BackgroundService, IWheelCompatibilityService
+    public sealed class WheelCompatibilityWorker : BackgroundService, IWheelCompatibilityService
     {
-        private readonly ILogger<WheelCompatibilityWorker> Logger;
-        private readonly TcpHost TCPHost;
+        private readonly ILogger<WheelCompatibilityWorker> logger;
+        private readonly WheelInputTransformer transformer;
+        private TcpHost? tcpHost;
 
-        public int GetMainWheelIndex()
+        public WheelCompatibilityWorker(ILogger<WheelCompatibilityWorker> logger, WheelInputTransformer transformer)
         {
-            return RacingWheel.RacingWheels.ToList().IndexOf(WheelManager.MainWheel);
-        }
-        public void Start()
-        {
-            WheelInputTransformer.Start();
+            this.logger = logger;
+            this.transformer = transformer;
         }
 
-        public void Stop()
+        // ---- Calls from the status window ----
+
+        public string GetLiveState()
         {
-            WheelInputTransformer.Stop();
+            RacingWheelReading reading = transformer.LatestReading;
+            return new LiveState(
+                transformer.IsWheelConnected,
+                transformer.InjectionEnabled,
+                reading.Wheel,
+                reading.Throttle,
+                reading.Brake,
+                (long)reading.Buttons
+            ).Format();
         }
 
-        public WheelCompatibilityWorker(ILogger<WheelCompatibilityWorker> logger)
+        public void SetEnabled(bool enabled) => transformer.InjectionEnabled = enabled;
+
+        // ---- Service lifetime ----
+
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            Logger = logger;
-            TCPHost = new TcpHost(16581);
-        }
+            transformer.Start();
 
-        protected override Task ExecuteAsync(CancellationToken Cancellation)
-        {
-            TCPHost.AddService<IWheelCompatibilityService>(this);
-
-            WheelInputTransformer.Start();
-
-            TCPHost.Open();
+            try
+            {
+                // Loopback only: the old code listened on every network interface, so other devices
+                // on your network could control this service (which runs with full system rights).
+                tcpHost = new TcpHost(new IPEndPoint(IPAddress.Loopback, IWheelCompatibilityService.Port));
+                tcpHost.AddService<IWheelCompatibilityService>(this);
+                tcpHost.Open();
+            }
+            catch (Exception ex)
+            {
+                // The wheel still works without this; only the status window can't connect.
+                logger.LogError(ex, "Could not open the status connection on port {Port}. The wheel still works, but the status window won't.", IWheelCompatibilityService.Port);
+                tcpHost = null;
+            }
 
             return Task.CompletedTask;
         }
 
-        public override Task StopAsync(CancellationToken Cancellation)
+        public override async Task StopAsync(CancellationToken cancellationToken)
         {
-            TCPHost.Close();
+            try
+            {
+                tcpHost?.Close();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error closing the status connection.");
+            }
 
-            WheelInputTransformer.Stop();
+            transformer.Stop();
 
-            return Task.CompletedTask;
+            await base.StopAsync(cancellationToken);
         }
     }
 }
