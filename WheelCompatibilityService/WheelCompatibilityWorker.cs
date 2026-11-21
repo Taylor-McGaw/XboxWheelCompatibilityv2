@@ -29,7 +29,15 @@ namespace XboxWheelCompatibility.WheelCompatibilityService
                 reading.Wheel,
                 reading.Throttle,
                 reading.Brake,
-                (long)reading.Buttons
+                (long)reading.Buttons,
+                transformer.Problem switch
+                {
+                    InjectionProblem.XboxAccessoryServiceDisabled => WheelProblem.XboxAccessoryServiceDisabled,
+                    InjectionProblem.Failed => WheelProblem.InjectionFailed,
+                    InjectionProblem.XboxAccessoryServiceNotResponding => WheelProblem.XboxAccessoryServiceNotResponding,
+                    _ => WheelProblem.None,
+                },
+                transformer.UsingVirtualXbox360
             ).Format();
         }
 

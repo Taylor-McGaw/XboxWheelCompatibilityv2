@@ -35,10 +35,12 @@ namespace WheelCompatibilityConfigurator
             InitializeComponent();
             BuildButtonChips();
 
-            // "--demo" shows fake wheel data, "--demo-offline" shows the service-not-running screen.
+            // Preview modes: "--demo" fake wheel data, "--demo-offline" service not running,
+            // "--demo-problem" the Xbox Accessory Management Service warning.
             string[] args = Environment.GetCommandLineArgs();
-            if (args.Contains("--demo")) demo = new DemoSource(offline: false);
-            if (args.Contains("--demo-offline")) demo = new DemoSource(offline: true);
+            if (args.Contains("--demo")) demo = new DemoSource(offline: false, problem: WheelProblem.None);
+            if (args.Contains("--demo-offline")) demo = new DemoSource(offline: true, problem: WheelProblem.None);
+            if (args.Contains("--demo-problem") || args.Contains("--demo-stuck")) demo = new DemoSource(offline: false, problem: WheelProblem.XboxAccessoryServiceDisabled);
 
             SourceInitialized += (_, _) => UseDarkTitleBar();
             refreshTimer.Tick += async (_, _) => await RefreshAsync();
@@ -96,14 +98,22 @@ namespace WheelCompatibilityConfigurator
             TestPanel.Visibility = Visibility.Visible;
             NoWheelOverlay.Visibility = s.WheelConnected ? Visibility.Collapsed : Visibility.Visible;
 
+            bool hasProblem = s.WheelConnected && s.Problem != WheelProblem.None;
+            RenderProblem(hasProblem ? s.Problem : WheelProblem.None);
+
             if (!s.WheelConnected) SetStatus("No wheel", (Brush)FindResource("SubtleTextBrush"));
             else if (!s.Enabled) SetStatus("Paused", (Brush)FindResource("WarningBrush"));
+            else if (hasProblem) SetStatus("Not reaching games", (Brush)FindResource("WarningBrush"));
             else SetStatus("Connected", (Brush)FindResource("AccentBrush"));
 
-            FooterTitle.Text = s.Enabled ? "Sending to games" : "Paused";
-            FooterText.Text = s.Enabled
-                ? "Games see your wheel as an Xbox controller."
-                : "Games don't get controller input from your wheel. Use this for games with built-in wheel support.";
+            FooterTitle.Text = !s.Enabled ? "Paused" : hasProblem ? "Not reaching games" : "Sending to games";
+            FooterText.Text = !s.Enabled
+                ? "Games don't get controller input from your wheel. Use this for games with built-in wheel support."
+                : hasProblem
+                ? "Your wheel is detected, but Windows won't create the Xbox controller. See the warning above."
+                : s.VirtualXbox360
+                ? "Games see your wheel as an Xbox 360 controller (via ViGEmBus)."
+                : "Games see your wheel as an Xbox controller.";
             ToggleButton.IsEnabled = true;
             ToggleButton.Content = s.Enabled ? "Pause" : "Resume";
 
@@ -111,6 +121,104 @@ namespace WheelCompatibilityConfigurator
             RenderPedal(ThrottleFill, ThrottleText, s.Throttle);
             RenderPedal(BrakeFill, BrakeText, s.Brake);
             RenderButtons((RacingWheelButtons)s.Buttons);
+        }
+
+        private int shownProblem = -1;
+        private DateTime? fixAppliedAt;
+        private bool restartHintShown;
+        private static readonly TimeSpan FixGracePeriod = TimeSpan.FromSeconds(15);
+
+        private void RenderProblem(int problem)
+        {
+            if (problem == WheelProblem.None)
+            {
+                fixAppliedAt = null;
+                restartHintShown = false;
+            }
+            else if (problem == WheelProblem.XboxAccessoryServiceDisabled && fixAppliedAt is DateTime appliedAt
+                     && !restartHintShown && DateTime.UtcNow - appliedAt > FixGracePeriod)
+            {
+                // The setting was changed, but the Windows service got stuck while starting. A restart clears that.
+                restartHintShown = true;
+                shownProblem = problem;
+                ProblemText.Text = "The service was turned on, but Windows hasn't finished starting it. Restart your PC to finish the fix, then open your game.";
+                FixButton.Visibility = Visibility.Collapsed;
+                ProblemBanner.Visibility = Visibility.Visible;
+                return;
+            }
+
+            if (problem == shownProblem) return;
+            shownProblem = problem;
+
+            switch (problem)
+            {
+                case WheelProblem.XboxAccessoryServiceDisabled:
+                    ProblemText.Text = "The Windows \"Xbox Accessory Management Service\" is turned off (often by tweak or debloat tools). Click Fix it to turn it back on, then restart your game.";
+                    FixButton.Visibility = Visibility.Visible;
+                    ProblemBanner.Visibility = Visibility.Visible;
+                    break;
+
+                case WheelProblem.XboxAccessoryServiceNotResponding:
+                    ProblemText.Text = "Windows isn't responding: its \"Xbox Accessory Management Service\" is stuck starting. Restart your PC. If that doesn't help, run Windows Update and the Windows repair tools (sfc /scannow).";
+                    FixButton.Visibility = Visibility.Collapsed;
+                    ProblemBanner.Visibility = Visibility.Visible;
+                    break;
+
+                case WheelProblem.InjectionFailed:
+                    ProblemText.Text = "Windows refused the virtual Xbox controller. Check Event Viewer > Windows Logs > Application for WheelCompatibilityService errors.";
+                    FixButton.Visibility = Visibility.Collapsed;
+                    ProblemBanner.Visibility = Visibility.Visible;
+                    break;
+
+                default:
+                    ProblemBanner.Visibility = Visibility.Collapsed;
+                    break;
+            }
+        }
+
+        private async void FixButton_Click(object sender, RoutedEventArgs e)
+        {
+            FixButton.IsEnabled = false;
+            ProblemText.Text = "Turning the service on...";
+
+            int exitCode;
+            try
+            {
+                // Set the Xbox Accessory Management Service back to its Windows default (Manual) and start it.
+                // Needs admin rights, so Windows shows a permission prompt.
+                exitCode = await Task.Run(() =>
+                {
+                    using Process? process = Process.Start(new ProcessStartInfo("cmd.exe", "/c sc config XboxGipSvc start= demand && sc start XboxGipSvc")
+                    {
+                        UseShellExecute = true,
+                        Verb = "runas",
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                    });
+                    process?.WaitForExit();
+                    return process?.ExitCode ?? -1;
+                });
+            }
+            catch (Win32Exception)
+            {
+                exitCode = -2; // permission prompt was cancelled
+            }
+
+            FixButton.IsEnabled = true;
+            shownProblem = -1; // let the next refresh redraw the banner
+
+            if (exitCode is 0 or 1056)
+            {
+                fixAppliedAt = DateTime.UtcNow;
+                if (demo != null && !Environment.GetCommandLineArgs().Contains("--demo-stuck")) demo.ClearProblem();
+                ProblemText.Text = "Done. Checking again... Restart your game once this warning disappears.";
+                shownProblem = WheelProblem.XboxAccessoryServiceDisabled; // keep this message until the service reports success
+                return;
+            }
+
+            ProblemText.Text = exitCode == -2
+                ? "Permission was not given. Click Fix it and choose Yes."
+                : $"Couldn't turn the service on (error {exitCode}). Open services.msc, find \"Xbox Accessory Management Service\", set Startup type to Manual and click Start.";
+            shownProblem = WheelProblem.XboxAccessoryServiceDisabled;
         }
 
         private void SetStatus(string text, Brush color)
@@ -324,8 +432,15 @@ namespace WheelCompatibilityConfigurator
             private readonly bool offline;
             private readonly Stopwatch clock = Stopwatch.StartNew();
             private bool enabled = true;
+            private int problem;
 
-            public DemoSource(bool offline) => this.offline = offline;
+            public DemoSource(bool offline, int problem)
+            {
+                this.offline = offline;
+                this.problem = problem;
+            }
+
+            public void ClearProblem() => problem = WheelProblem.None;
 
             public bool SetEnabled(bool value)
             {
@@ -349,7 +464,7 @@ namespace WheelCompatibilityConfigurator
                 if (step == 3) buttons |= RacingWheelButtons.DPadUp | RacingWheelButtons.Button6;
                 if (step == 4) buttons |= RacingWheelButtons.Button7;
 
-                return new LiveState(true, enabled, wheel, throttle, brake, (long)buttons);
+                return new LiveState(true, enabled, wheel, throttle, brake, (long)buttons, problem);
             }
         }
     }

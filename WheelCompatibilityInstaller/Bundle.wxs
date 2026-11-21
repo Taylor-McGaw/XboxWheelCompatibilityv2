@@ -1,10 +1,10 @@
-﻿<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
 	<!-- No .NET runtime download needed any more: both programs are self-contained. -->
 	<Bundle
 		UpgradeCode="6070FEFC-B26D-47F2-B80D-32EA2DA933BA"
 		Name="Xbox Wheel Compatibility"
 		Manufacturer="Camren Mumme"
-		Version="1.3.0"
+		Version="2.0.0"
 	>
 		<BootstrapperApplication>
 			<bal:WixStandardBootstrapperApplication

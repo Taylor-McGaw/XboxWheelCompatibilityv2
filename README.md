@@ -30,6 +30,7 @@ If something goes wrong, check **Event Viewer > Windows Logs > Application** for
 | Button3-6 | A / B / X / Y |
 
 ## Requirements
+- **Recommended: [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) (free driver).** When it's installed, your wheel appears as a virtual Xbox 360 controller that every game can see, including F1 25. Without it, the app uses Windows' own method, which only some games see and which needs the Windows "Xbox Accessory Management Service".
 - Windows 11, or Windows 10 version 22H2 or above (64-bit)
 
 ## Tested with
@@ -46,6 +47,13 @@ dotnet build WheelCompatibilityInstaller -c Release
 ```
 
 The two programs end up in `<project>\bin\Release\publish\`. The installer is in `WheelCompatibilityInstaller\bin\Release\`.
+
+## Changes in 2.0.0
+- **Works with F1 25 and other games:** when [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) is installed, the wheel shows up as a virtual Xbox 360 controller that games detect through XInput. Tested with F1 25. Without ViGEmBus, the app falls back to Windows' own method.
+- A stuck Windows controller service can no longer freeze the app. The wheel keeps showing live, and the window explains what's wrong.
+- The status window warns when the Windows "Xbox Accessory Management Service" is disabled or stuck, with a **Fix it** button for the disabled case.
+- Clearer event log messages, and automatic retries once a problem is fixed.
+- The status window shows whether games see an Xbox 360 controller (ViGEmBus) or the Windows controller.
 
 ## Changes in 1.3.0
 - The wheel is now read about 1000 times per second instead of about 64, which removes up to ~16 ms of input lag.

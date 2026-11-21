@@ -35,6 +35,23 @@
 
             <StackPanel x:Name="TestPanel">
 
+                <!-- Shown when the wheel works but games can't see it -->
+                <Border x:Name="ProblemBanner" Visibility="Collapsed" Background="#24E3A82B" BorderBrush="#73E3A82B" BorderThickness="1" CornerRadius="10" Padding="14,12" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="&#xE7BA;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="20" Foreground="{StaticResource WarningBrush}" VerticalAlignment="Top" Margin="0,1,12,0" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="Games can't see your wheel" FontWeight="SemiBold" />
+                            <TextBlock x:Name="ProblemText" TextWrapping="Wrap" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Button x:Name="FixButton" Grid.Column="2" Content="Fix it" Style="{StaticResource PrimaryButton}" Padding="16,6" VerticalAlignment="Center" Margin="12,0,0,0" Click="FixButton_Click" />
+                    </Grid>
+                </Border>
+
                 <!-- Steering -->
                 <Border Style="{StaticResource Card}">
                     <Grid>

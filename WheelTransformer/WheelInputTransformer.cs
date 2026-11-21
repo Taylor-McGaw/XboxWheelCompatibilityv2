@@ -1,10 +1,24 @@
 ﻿using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Windows.Gaming.Input;
-using Windows.UI.Input.Preview.Injection;
 
 namespace XboxWheelCompatibility.WheelTransformer
 {
+    /// <summary>Why wheel input isn't reaching games, if it isn't.</summary>
+    public enum InjectionProblem
+    {
+        None,
+
+        /// <summary>Windows' "Xbox Accessory Management Service" (XboxGipSvc) is disabled.</summary>
+        XboxAccessoryServiceDisabled,
+
+        /// <summary>Some other error while sending input (see the event log).</summary>
+        Failed,
+
+        /// <summary>XboxGipSvc is enabled but not responding (CO_E_SERVEREXEC_FAILURE), usually stuck while starting.</summary>
+        XboxAccessoryServiceNotResponding,
+    }
+
     /// <summary>
     /// Reads the racing wheel about 1000 times a second and sends it to Windows as a virtual Xbox controller.
     /// Start/Stop control the background loop (used by the service). InjectionEnabled pauses/resumes
@@ -14,11 +28,10 @@ namespace XboxWheelCompatibility.WheelTransformer
     {
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(1);
         private static readonly TimeSpan ErrorBackoff = TimeSpan.FromMilliseconds(100);
+        private static readonly TimeSpan HangThreshold = TimeSpan.FromSeconds(2); // a Windows call this slow counts as stuck
         private const long KeepAliveMs = 50;            // resend unchanged input this often
         private const long WheelSafetyCheckMs = 1000;   // re-check wheel count this often
-        private const long InjectorRetryMs = 5000;      // retry creating the injector this often
         private const long ErrorLogIntervalMs = 10000;  // don't flood the event log
-        private const int ErrorsBeforeInjectorReset = 50;
 
         private readonly ILogger logger;
         private readonly object lifecycleLock = new();
@@ -29,6 +42,7 @@ namespace XboxWheelCompatibility.WheelTransformer
         private volatile bool wheelConnected;
         private readonly object readingLock = new();
         private RacingWheelReading latestReading;
+        private volatile InjectionWorker? worker;
 
         public WheelInputTransformer(ILogger<WheelInputTransformer> logger)
         {
@@ -52,6 +66,21 @@ namespace XboxWheelCompatibility.WheelTransformer
         }
 
         public bool IsWheelConnected => wheelConnected;
+
+        /// <summary>Why input isn't reaching games right now, or None if it is (or nothing has been sent yet).</summary>
+        public InjectionProblem Problem
+        {
+            get
+            {
+                InjectionWorker? current = worker;
+                if (current == null || !wheelConnected) return InjectionProblem.None;
+                if (current.CurrentCallDuration > HangThreshold) return InjectionProblem.XboxAccessoryServiceNotResponding;
+                return current.Problem;
+            }
+        }
+
+        /// <summary>True when games see the wheel as a virtual Xbox 360 controller (ViGEmBus).</summary>
+        public bool UsingVirtualXbox360 => worker?.UsingVirtualXbox360 ?? false;
 
         /// <summary>The most recent wheel reading (all zero when no wheel is connected).</summary>
         public RacingWheelReading LatestReading
@@ -115,23 +144,23 @@ namespace XboxWheelCompatibility.WheelTransformer
         {
             using var sleeper = new PreciseSleeper();
             using var tracker = new WheelTracker();
+            var sender = new InjectionWorker(logger);
+            worker = sender;
 
             logger.LogInformation("Wheel input loop started ({Timer} timer).", sleeper.IsHighResolution ? "high-resolution" : "fallback");
 
             var clock = Stopwatch.StartNew();
-            InputInjector? injector = null;
-            long nextInjectorAttempt = 0;
             long nextSafetyCheck = 0;
-            long lastInjectTime = 0;
+            long lastPostTime = 0;
             long lastErrorLog = -ErrorLogIntervalMs;
-            int consecutiveErrors = 0;
-            GamepadReading lastSent = default;
+            bool hangLogged = false;
+            GamepadReading lastPosted = default;
             bool controllerActive = false; // true when we have sent non-neutral input
 
             void SendNeutral()
             {
-                if (injector == null || !controllerActive) return;
-                injector.InjectGamepadInput(new InjectedInputGamepadInfo(GamepadMapper.Neutral()));
+                if (!controllerActive) return;
+                sender.Post(GamepadMapper.Neutral());
                 controllerActive = false;
             }
 
@@ -145,6 +174,15 @@ namespace XboxWheelCompatibility.WheelTransformer
                     {
                         tracker.CheckForMissedChanges();
                         nextSafetyCheck = now + WheelSafetyCheckMs;
+
+                        // Windows calls happen on the sender thread, so a stuck call can't freeze this loop.
+                        bool hung = sender.CurrentCallDuration > HangThreshold;
+                        if (hung && !hangLogged)
+                        {
+                            logger.LogError("Windows is not responding to controller input (the \"Xbox Accessory Management Service\" may be stuck starting). " +
+                                "The wheel is still read, but games can't see it. Restarting the PC usually fixes this.");
+                        }
+                        hangLogged = hung;
                     }
 
                     if (tracker.Refresh())
@@ -154,16 +192,6 @@ namespace XboxWheelCompatibility.WheelTransformer
 
                         // Release everything so no button or pedal gets stuck when a wheel is unplugged or swapped.
                         SendNeutral();
-                    }
-
-                    if (injector == null && now >= nextInjectorAttempt)
-                    {
-                        injector = InputInjector.TryCreate();
-                        if (injector == null)
-                        {
-                            logger.LogWarning("Could not create the Windows input injector. Retrying in {Seconds} seconds.", InjectorRetryMs / 1000);
-                            nextInjectorAttempt = now + InjectorRetryMs;
-                        }
                     }
 
                     RacingWheel? wheel = tracker.MainWheel;
@@ -182,40 +210,28 @@ namespace XboxWheelCompatibility.WheelTransformer
                         {
                             SendNeutral();
                         }
-                        else if (injector != null)
+                        else
                         {
                             GamepadReading pad = GamepadMapper.ToGamepad(reading);
 
                             // Only send when something changed, plus a regular keep-alive.
-                            if (!controllerActive || !GamepadMapper.SameInput(pad, lastSent) || now - lastInjectTime >= KeepAliveMs)
+                            if (!controllerActive || !GamepadMapper.SameInput(pad, lastPosted) || now - lastPostTime >= KeepAliveMs)
                             {
-                                injector.InjectGamepadInput(new InjectedInputGamepadInfo(pad));
-                                lastSent = pad;
-                                lastInjectTime = now;
+                                sender.Post(pad);
+                                lastPosted = pad;
+                                lastPostTime = now;
                                 controllerActive = true;
                             }
                         }
                     }
-
-                    consecutiveErrors = 0;
                 }
                 catch (Exception ex)
                 {
-                    // Previously any error here silently killed the loop forever. Now we log and keep going.
-                    consecutiveErrors++;
-
+                    // Errors reading the wheel: log now and then and keep going.
                     if (now - lastErrorLog >= ErrorLogIntervalMs)
                     {
-                        logger.LogError(ex, "Error in wheel input loop ({Count} in a row).", consecutiveErrors);
+                        logger.LogError(ex, "Error reading the racing wheel.");
                         lastErrorLog = now;
-                    }
-
-                    if (consecutiveErrors == ErrorsBeforeInjectorReset)
-                    {
-                        logger.LogWarning("Recreating the input injector after repeated errors.");
-                        injector = null;
-                        nextInjectorAttempt = now;
-                        controllerActive = false;
                     }
 
                     sleeper.Sleep(ErrorBackoff);
@@ -225,14 +241,10 @@ namespace XboxWheelCompatibility.WheelTransformer
                 sleeper.Sleep(PollInterval);
             }
 
-            try
-            {
-                SendNeutral();
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Could not release controller input while stopping.");
-            }
+            // Release all input, then stop the sender (it gives up quickly if Windows is stuck).
+            sender.Post(GamepadMapper.Neutral());
+            worker = null;
+            sender.Dispose();
 
             wheelConnected = false;
             SetLatestReading(default);
